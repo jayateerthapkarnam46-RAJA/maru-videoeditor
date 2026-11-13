@@ -1,19 +1,21 @@
 # MARU VIDEOEDITOR
 
-An Android video editing starter app built with Kotlin, Jetpack Compose, and Media3.
+Native Android video-editing MVP built with Kotlin, Jetpack Compose, and AndroidX Media3.
 
-## Current editing workflow
+## Working features
 
-- Import a video using Android's system document picker.
-- Preview and play/pause the selected clip.
-- Choose an in/out range using the timeline trim slider.
-- Optionally remove the source video's audio.
-- Export the trimmed video as MP4. Android 10+ saves it to `Movies/MARU VIDEOEDITOR`.
+- Import a video using Android's system document picker (no broad media permission request).
+- Preview the clip, play/pause, seek through it, and adjust preview speed.
+- Select an in/out trim range and export the selected section as MP4.
+- Optionally remove the source video's audio during export.
+- Save the current source, trim range, mute option, and caption text locally and restore the project on the next launch (while the Android document permission remains available).
+- Add a caption overlay to the preview.
+- Android 10+ exports to `Movies/MARU VIDEOEDITOR`.
 
-## Open and run
+## Build and run
 
-Open this repository in Android Studio (JDK 17), let Gradle sync, then run the `app` configuration on an Android device or emulator. The app uses Android's system picker, so it does not request broad media-library permissions.
+Open in Android Studio with JDK 17, sync Gradle, and run the `app` configuration on a physical device or emulator. Export compatibility depends on device codecs and source video formats.
 
-## Current limitations
+## Not yet implemented
 
-This is a functional editing MVP, not feature parity with CapCut. Split editing, text overlays, filters, transitions, music tracks, project persistence, and advanced export settings are not implemented yet; those controls are intentionally shown as unavailable rather than pretending to edit the video. Video transcoding support depends on the device's Media3 codecs and the source format.
+This is not feature-parity with CapCut. The caption currently appears in the preview only and is not included in the exported file. Multiple clips, split/ripple editing, music-track mixing, filters, transitions, crop/keyframes, thumbnails, project library, background export, and configurable resolution/bitrate still need implementation. The app has not been built or tested on a device in this environment.

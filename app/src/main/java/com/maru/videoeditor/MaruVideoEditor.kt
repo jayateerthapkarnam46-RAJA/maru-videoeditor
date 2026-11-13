@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -22,15 +24,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.TextFields
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -65,23 +67,28 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.ui.PlayerView
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Transformer
+import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
 import java.util.Locale
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
-private val Ink = Color(0xFF10111A)
-private val Panel = Color(0xFF1B1D29)
-private val Muted = Color(0xFFA9A9BC)
+private val EditorBackground = Color(0xFF10111A)
+private val EditorPanel = Color(0xFF1B1D29)
+private val EditorMuted = Color(0xFFA9A9BC)
+private const val PROJECT_PREFS = "maru_editor_project"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,27 +96,24 @@ fun MaruVideoEditor() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var videoUri by remember { mutableStateOf<Uri?>(null) }
-    var videoName by remember { mutableStateOf("Your next story") }
+    var videoName by remember { mutableStateOf("Untitled project") }
     var durationMs by remember { mutableLongStateOf(0L) }
-    var playbackPosition by remember { mutableLongStateOf(0L) }
+    var playheadMs by remember { mutableLongStateOf(0L) }
     var trimStart by remember { mutableFloatStateOf(0f) }
     var trimEnd by remember { mutableFloatStateOf(1f) }
     var isPlaying by remember { mutableStateOf(false) }
-    var muteOriginal by remember { mutableStateOf(false) }
+    var muted by remember { mutableStateOf(false) }
+    var playbackSpeed by remember { mutableFloatStateOf(1f) }
+    var overlayText by remember { mutableStateOf("") }
+    var editingText by remember { mutableStateOf(false) }
     var exporting by remember { mutableStateOf(false) }
-    var statusMessage by remember { mutableStateOf("Import a video to start editing") }
-    var exportProgress by remember { mutableFloatStateOf(0f) }
+    var status by remember { mutableStateOf("Import a video to start a project") }
 
-    val player = remember(context) {
-        ExoPlayer.Builder(context).build().apply {
-            playWhenReady = false
-        }
-    }
-
+    val player = remember(context) { ExoPlayer.Builder(context).build() }
     DisposableEffect(player) {
         val listener = object : Player.Listener {
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_READY && player.duration > 0) {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_READY && player.duration > 0) {
                     durationMs = player.duration
                     trimEnd = 1f
                 }
@@ -117,125 +121,155 @@ fun MaruVideoEditor() {
             override fun onIsPlayingChanged(playing: Boolean) { isPlaying = playing }
         }
         player.addListener(listener)
-        onDispose {
-            player.removeListener(listener)
-            player.release()
+        onDispose { player.removeListener(listener); player.release() }
+    }
+
+    LaunchedEffect(Unit) {
+        val prefs = context.getSharedPreferences(PROJECT_PREFS, Context.MODE_PRIVATE)
+        val savedUri = prefs.getString("video_uri", null)?.let(Uri::parse)
+        if (savedUri != null) {
+            try {
+                context.contentResolver.openFileDescriptor(savedUri, "r")?.close()
+                videoUri = savedUri
+                videoName = prefs.getString("video_name", "Saved project") ?: "Saved project"
+                trimStart = prefs.getFloat("trim_start", 0f)
+                trimEnd = prefs.getFloat("trim_end", 1f)
+                muted = prefs.getBoolean("muted", false)
+                overlayText = prefs.getString("overlay_text", "") ?: ""
+                player.setMediaItem(MediaItem.fromUri(savedUri))
+                player.prepare()
+                status = "Project restored"
+            } catch (_: Exception) {
+                status = "Saved video is unavailable. Import it again to continue."
+            }
+        }
+    }
+
+    LaunchedEffect(videoUri, videoName, trimStart, trimEnd, muted, overlayText) {
+        context.getSharedPreferences(PROJECT_PREFS, Context.MODE_PRIVATE).edit().apply {
+            putString("video_uri", videoUri?.toString())
+            putString("video_name", videoName)
+            putFloat("trim_start", trimStart)
+            putFloat("trim_end", trimEnd)
+            putBoolean("muted", muted)
+            putString("overlay_text", overlayText)
+            apply()
         }
     }
 
     LaunchedEffect(player, videoUri) {
         while (true) {
-            playbackPosition = player.currentPosition.coerceAtLeast(0L)
-            delay(250)
+            playheadMs = player.currentPosition.coerceAtLeast(0L)
+            delay(200)
         }
     }
 
-    val pickVideo = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    val importVideo = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             try {
                 context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
             } catch (_: SecurityException) { }
             videoUri = uri
-            videoName = queryDisplayName(context, uri) ?: "Imported video"
+            videoName = displayName(context, uri) ?: "Imported video"
             durationMs = 0L
             trimStart = 0f
             trimEnd = 1f
+            playheadMs = 0L
             player.setMediaItem(MediaItem.fromUri(uri))
             player.prepare()
-            statusMessage = "Video ready — set your trim and export"
+            status = "Video ready — adjust the trim range or add a preview caption"
         }
     }
 
-    Scaffold(containerColor = Ink) { padding ->
+    Scaffold(containerColor = EditorBackground) { insets ->
         Column(
-            Modifier.fillMaxSize().background(Ink).padding(padding).padding(horizontal = 18.dp)
+            Modifier.fillMaxSize().background(EditorBackground).padding(insets).padding(horizontal = 16.dp)
         ) {
             Row(
-                Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 16.dp),
+                Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("MARU", color = Color.White, fontWeight = FontWeight.Black, fontSize = 25.sp, letterSpacing = 2.sp)
-                    Text("VIDEOEDITOR", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 11.sp, letterSpacing = 2.sp)
+                    Text("MARU", color = Color.White, fontWeight = FontWeight.Black, fontSize = 24.sp, letterSpacing = 2.sp)
+                    Text("VIDEOEDITOR  ·  PROJECT", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 10.sp, letterSpacing = 1.5.sp)
                 }
                 Button(
                     onClick = {
-                        if (videoUri == null || exporting) return@Button
+                        val source = videoUri ?: return@Button
                         exporting = true
-                        exportProgress = 0f
-                        statusMessage = "Preparing your export…"
+                        status = "Exporting trimmed video… Keep the app open."
                         scope.launch {
                             try {
-                                exportTrimmedVideo(context, videoUri!!, trimStart, trimEnd, durationMs, muteOriginal,
-                                    onProgress = { exportProgress = it },
-                                    onComplete = { savedUri ->
-                                        exporting = false
-                                        statusMessage = "Export saved to Movies/MARU VIDEOEDITOR"
-                                    },
-                                    onError = { message ->
-                                        exporting = false
-                                        statusMessage = "Export failed: $message"
-                                    })
+                                exportTrimmedVideo(context, source, trimStart, trimEnd, durationMs, muted)
+                                status = "Export saved to Movies/MARU VIDEOEDITOR"
                             } catch (e: Exception) {
-                                exporting = false
-                                statusMessage = "Export failed: ${e.localizedMessage ?: "Unknown error"}"
-                            }
+                                status = "Export failed: ${e.localizedMessage ?: "Unsupported video or storage error"}"
+                            } finally { exporting = false }
                         }
                     },
                     enabled = videoUri != null && !exporting,
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                     shape = RoundedCornerShape(14.dp)
                 ) {
-                    if (exporting) CircularProgressIndicator(Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
-                    else Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                    if (exporting) CircularProgressIndicator(Modifier.size(17.dp), color = Color.White, strokeWidth = 2.dp)
+                    else Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(17.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text(if (exporting) "Exporting" else "Export")
+                    Text(if (exporting) "Exporting" else "Export MP4")
                 }
             }
 
             Box(
-                Modifier.fillMaxWidth().weight(0.9f).clip(RoundedCornerShape(22.dp)).background(Color(0xFF08090F)),
+                Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(22.dp)).background(Color(0xFF08090F)),
                 contentAlignment = Alignment.Center
             ) {
                 if (videoUri != null) {
                     AndroidView(
                         modifier = Modifier.fillMaxSize(),
-                        factory = { viewContext -> PlayerView(viewContext).apply { this.player = player; useController = true } },
+                        factory = { PlayerView(it).apply { player = this@MaruVideoEditor.player; useController = false; resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT } },
                         update = { it.player = player }
                     )
+                    if (overlayText.isNotBlank()) {
+                        Text(
+                            overlayText,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 23.sp,
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 26.dp)
+                                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp)).padding(horizontal = 12.dp, vertical = 7.dp)
+                        )
+                    }
                 } else {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(Modifier.size(76.dp).clip(CircleShape).background(Color(0xFF252132)), contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(42.dp))
+                        Box(Modifier.size(70.dp).clip(CircleShape).background(Color(0xFF252132)), contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.PlayArrow, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(40.dp))
                         }
-                        Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(12.dp))
                         Text("Your video preview", color = Color.White, fontWeight = FontWeight.SemiBold)
-                        Text("Import a clip to begin", color = Muted, fontSize = 13.sp)
+                        Text("Import a clip to begin editing", color = EditorMuted, fontSize = 13.sp)
                     }
                 }
             }
 
-            Row(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(vertical = 9.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text(videoName, color = Color.White, fontWeight = FontWeight.SemiBold, maxLines = 1, modifier = Modifier.weight(1f))
-                Text("${formatTime(playbackPosition)} / ${formatTime(durationMs)}", color = Muted, fontSize = 12.sp)
+                Text("${timecode(playheadMs)} / ${timecode(durationMs)}", color = EditorMuted, fontSize = 12.sp)
             }
 
-            Surface(Modifier.fillMaxWidth().weight(0.72f), color = Panel, shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)) {
-                Column(Modifier.fillMaxSize().padding(16.dp)) {
+            Surface(Modifier.fillMaxWidth().weight(0.94f), color = EditorPanel, shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)) {
+                Column(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 12.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column {
                             Text("TIMELINE", color = Color.White, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                            Text("Drag handles to choose a clip", color = Muted, fontSize = 12.sp)
+                            Text("Choose the section to export", color = EditorMuted, fontSize = 12.sp)
                         }
-                        IconButton(onClick = { pickVideo.launch(arrayOf("video/*")) }) {
+                        IconButton(onClick = { importVideo.launch(arrayOf("video/*")) }) {
                             Icon(Icons.Default.Add, contentDescription = "Import video", tint = MaterialTheme.colorScheme.secondary)
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(formatTime((durationMs * trimStart).toLong()), color = MaterialTheme.colorScheme.secondary, fontSize = 12.sp)
-                        Spacer(Modifier.width(8.dp))
+                        Text(timecode((durationMs * trimStart).toLong()), color = MaterialTheme.colorScheme.secondary, fontSize = 11.sp)
+                        Spacer(Modifier.width(5.dp))
                         RangeSlider(
                             value = trimStart..trimEnd,
                             onValueChange = { range -> trimStart = range.start; trimEnd = range.endInclusive },
@@ -243,130 +277,145 @@ fun MaruVideoEditor() {
                             enabled = durationMs > 0 && !exporting,
                             modifier = Modifier.weight(1f)
                         )
-                        Spacer(Modifier.width(8.dp))
-                        Text(formatTime((durationMs * trimEnd).toLong()), color = MaterialTheme.colorScheme.secondary, fontSize = 12.sp)
+                        Spacer(Modifier.width(5.dp))
+                        Text(timecode((durationMs * trimEnd).toLong()), color = MaterialTheme.colorScheme.secondary, fontSize = 11.sp)
                     }
+                    Slider(
+                        value = if (durationMs > 0) (playheadMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f,
+                        onValueChange = { fraction ->
+                            val newPosition = (durationMs * fraction).toLong()
+                            playheadMs = newPosition
+                            player.seekTo(newPosition)
+                        },
+                        enabled = durationMs > 0,
+                        modifier = Modifier.height(28.dp)
+                    )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("${formatTime((durationMs * (trimEnd - trimStart)).toLong())} selected", color = Muted, fontSize = 12.sp)
-                        Text("${formatTime(durationMs)} total", color = Muted, fontSize = 12.sp)
+                        Text("${timecode((durationMs * (trimEnd - trimStart)).toLong())} selected", color = EditorMuted, fontSize = 11.sp)
+                        Text("Original audio ${if (muted) "off" else "on"}", color = EditorMuted, fontSize = 11.sp)
                     }
-                    Spacer(Modifier.height(14.dp))
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ToolButton("Split", Icons.Default.ContentCut, enabled = false) { }
-                        ToolButton(if (muteOriginal) "Muted" else "Audio", Icons.Default.MusicNote, enabled = videoUri != null) { muteOriginal = !muteOriginal }
-                        ToolButton("Text", Icons.Default.TextFields, enabled = false) { }
-                        ToolButton("Filters", Icons.Default.Tune, enabled = false) { }
+                    Spacer(Modifier.height(8.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                        EditorTool("Audio", Icons.Default.MusicNote, enabled = videoUri != null, selected = muted) { muted = !muted }
+                        EditorTool("Caption", Icons.Default.TextFields, enabled = videoUri != null, selected = editingText) { editingText = !editingText }
+                        EditorTool("Speed", Icons.Default.Speed, enabled = videoUri != null, selected = false) {
+                            playbackSpeed = if (playbackSpeed >= 2f) 0.5f else playbackSpeed + 0.5f
+                            player.playbackParameters = PlaybackParameters(playbackSpeed)
+                        }
                     }
-                    Spacer(Modifier.height(14.dp))
+                    if (editingText) {
+                        Spacer(Modifier.height(8.dp))
+                        BasicTextField(
+                            value = overlayText,
+                            onValueChange = { overlayText = it.take(80) },
+                            modifier = Modifier.fillMaxWidth().background(Color(0xFF292B3B), RoundedCornerShape(10.dp)).padding(11.dp),
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.White),
+                            decorationBox = { field ->
+                                Box {
+                                    if (overlayText.isEmpty()) Text("Type a preview caption (80 chars)", color = EditorMuted, fontSize = 13.sp)
+                                    field()
+                                }
+                            }
+                        )
+                        Text("Caption is preview-only; it is not burned into the exported video yet.", color = EditorMuted, fontSize = 10.sp)
+                    }
+                    Spacer(Modifier.height(7.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         OutlinedButton(
-                            onClick = { if (videoUri == null) pickVideo.launch(arrayOf("video/*")) else { player.seekTo((durationMs * trimStart).toLong()); player.playWhenReady = !player.isPlaying } },
-                            shape = RoundedCornerShape(14.dp)
+                            onClick = {
+                                if (videoUri == null) importVideo.launch(arrayOf("video/*"))
+                                else {
+                                    if (!player.isPlaying && player.currentPosition < (durationMs * trimStart).toLong()) player.seekTo((durationMs * trimStart).toLong())
+                                    player.playWhenReady = !player.isPlaying
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
+                            Spacer(Modifier.width(5.dp))
                             Text(if (videoUri == null) "Import video" else if (isPlaying) "Pause" else "Play")
                         }
                         TextButton(onClick = { player.seekTo((durationMs * trimStart).toLong()) }, enabled = videoUri != null) {
-                            Text("Reset preview", color = MaterialTheme.colorScheme.secondary)
+                            Text("Speed ${playbackSpeed}×  ·  Start", color = MaterialTheme.colorScheme.secondary, fontSize = 12.sp)
                         }
                     }
-                    if (exporting) {
-                        Slider(value = exportProgress, onValueChange = {}, enabled = false, modifier = Modifier.height(24.dp))
-                    }
-                    Text(statusMessage, color = if (statusMessage.startsWith("Export failed")) Color(0xFFFF8B8B) else Muted, fontSize = 12.sp, maxLines = 2)
+                    Text(status, color = if (status.startsWith("Export failed")) Color(0xFFFF8B8B) else EditorMuted, fontSize = 11.sp, maxLines = 2)
                 }
             }
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
         }
     }
 }
 
 @Composable
-private fun ToolButton(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, enabled: Boolean, onClick: () -> Unit) {
+private fun RowScope.EditorTool(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, enabled: Boolean, selected: Boolean, action: () -> Unit) {
     Surface(
-        onClick = onClick,
+        onClick = action,
         enabled = enabled,
         modifier = Modifier.weight(1f),
-        color = if (enabled) Color(0xFF292B3B) else Color(0xFF20212C),
-        shape = RoundedCornerShape(14.dp)
+        color = if (selected) Color(0xFF3B2E55) else Color(0xFF292B3B),
+        shape = RoundedCornerShape(12.dp)
     ) {
-        Column(Modifier.padding(vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(icon, contentDescription = label, tint = if (enabled) MaterialTheme.colorScheme.secondary else Muted, modifier = Modifier.size(19.dp))
-            Spacer(Modifier.height(4.dp))
-            Text(label, color = if (enabled) Color.White else Muted, fontSize = 11.sp)
+        Column(Modifier.padding(vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(icon, contentDescription = label, tint = if (enabled) MaterialTheme.colorScheme.secondary else EditorMuted, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.height(3.dp))
+            Text(label, color = if (enabled) Color.White else EditorMuted, fontSize = 10.sp)
         }
     }
 }
 
-private fun formatTime(milliseconds: Long): String {
-    val totalSeconds = (milliseconds.coerceAtLeast(0L) / 1000).toInt()
-    return String.format(Locale.US, "%02d:%02d", totalSeconds / 60, totalSeconds % 60)
+private fun timecode(milliseconds: Long): String {
+    val seconds = (milliseconds.coerceAtLeast(0L) / 1000).toInt()
+    return String.format(Locale.US, "%02d:%02d", seconds / 60, seconds % 60)
 }
 
-private fun queryDisplayName(context: Context, uri: Uri): String? {
-    return context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-        if (cursor.moveToFirst()) cursor.getString(0) else null
-    }
-}
+private fun displayName(context: Context, uri: Uri): String? = context.contentResolver.query(
+    uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+)?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
 
-private suspend fun exportTrimmedVideo(
-    context: Context,
-    source: Uri,
-    startFraction: Float,
-    endFraction: Float,
-    durationMs: Long,
-    removeAudio: Boolean,
-    onProgress: (Float) -> Unit,
-    onComplete: (Uri) -> Unit,
-    onError: (String) -> Unit
-) {
+private suspend fun exportTrimmedVideo(context: Context, source: Uri, startFraction: Float, endFraction: Float, durationMs: Long, removeAudio: Boolean) {
     if (durationMs <= 0L) throw IOException("Video duration is not available yet")
     val startMs = (durationMs * startFraction).toLong().coerceAtLeast(0L)
     val endMs = (durationMs * endFraction).toLong().coerceAtMost(durationMs)
-    if (endMs - startMs < 500L) throw IOException("Select a clip that is at least half a second long")
+    if (endMs - startMs < 500L) throw IOException("Choose a selection at least half a second long")
 
-    val output = File(context.cacheDir, "maru_export_${System.currentTimeMillis()}.mp4")
-    val mediaItem = MediaItem.Builder()
-        .setUri(source)
-        .setClippingConfiguration(
-            MediaItem.ClippingConfiguration.Builder()
-                .setStartPositionMs(startMs)
-                .setEndPositionMs(endMs)
+    val output = File(context.cacheDir, "maru_${System.currentTimeMillis()}.mp4")
+    val item = MediaItem.Builder().setUri(source).setClippingConfiguration(
+        MediaItem.ClippingConfiguration.Builder().setStartPositionMs(startMs).setEndPositionMs(endMs).build()
+    ).build()
+    val edited = EditedMediaItem.Builder(item).setRemoveAudio(removeAudio).build()
+
+    try {
+        suspendCancellableCoroutine { continuation ->
+            val transformer = Transformer.Builder(context)
+                .addListener(object : Transformer.Listener {
+                    override fun onCompleted(composition: androidx.media3.transformer.Composition, exportResult: ExportResult) {
+                        try {
+                            val saved = saveToMovies(context, output)
+                            output.delete()
+                            if (continuation.isActive) continuation.resume(saved)
+                        } catch (error: Exception) {
+                            output.delete()
+                            if (continuation.isActive) continuation.resumeWithException(error)
+                        }
+                    }
+
+                    override fun onError(composition: androidx.media3.transformer.Composition, exportResult: ExportResult, exportException: ExportException) {
+                        output.delete()
+                        if (continuation.isActive) continuation.resumeWithException(exportException)
+                    }
+                })
                 .build()
-        )
-        .build()
-    val editedItem = EditedMediaItem.Builder(mediaItem).setRemoveAudio(removeAudio).build()
-
-    val transformer = Transformer.Builder(context)
-        .addListener(object : Transformer.Listener {
-            override fun onCompleted(composition: androidx.media3.transformer.Composition, exportResult: ExportResult) {
-                try {
-                    onProgress(1f)
-                    onComplete(copyToMovies(context, output))
-                } catch (e: Exception) {
-                    onError(e.localizedMessage ?: "Could not save exported video")
-                } finally {
-                    output.delete()
-                }
-            }
-
-            override fun onError(composition: androidx.media3.transformer.Composition, exportResult: ExportResult, exportException: ExportException) {
-                output.delete()
-                onError(exportException.localizedMessage ?: "Media export failed")
-            }
-        })
-        .build()
-
-    transformer.start(editedItem, output.absolutePath)
-    // Media3's Transformer reports progress through its listener; keep the UI responsive while it runs.
-    while (!output.exists() || output.length() == 0L) {
-        delay(300)
-        onProgress(0.25f)
+            continuation.invokeOnCancellation { transformer.cancel(); output.delete() }
+            transformer.start(edited, output.absolutePath)
+        }
+    } catch (error: Exception) {
+        output.delete()
+        throw error
     }
 }
 
-private fun copyToMovies(context: Context, file: File): Uri {
+private fun saveToMovies(context: Context, file: File): Uri {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, "MARU_${System.currentTimeMillis()}.mp4")
@@ -374,22 +423,22 @@ private fun copyToMovies(context: Context, file: File): Uri {
             put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/MARU VIDEOEDITOR")
             put(MediaStore.Video.Media.IS_PENDING, 1)
         }
-        val uri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-            ?: throw IOException("Unable to create video in Movies")
+        val destination = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+            ?: throw IOException("Could not create an output video")
         try {
-            context.contentResolver.openOutputStream(uri)?.use { output -> FileInputStream(file).use { it.copyTo(output) } }
-                ?: throw IOException("Unable to open exported video")
+            context.contentResolver.openOutputStream(destination)?.use { output -> FileInputStream(file).use { it.copyTo(output) } }
+                ?: throw IOException("Could not open the output video")
             values.clear()
             values.put(MediaStore.Video.Media.IS_PENDING, 0)
-            context.contentResolver.update(uri, values, null, null)
-            return uri
-        } catch (e: Exception) {
-            context.contentResolver.delete(uri, null, null)
-            throw e
+            context.contentResolver.update(destination, values, null, null)
+            return destination
+        } catch (error: Exception) {
+            context.contentResolver.delete(destination, null, null)
+            throw error
         }
     }
     val directory = context.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: context.filesDir
-    val target = File(directory, "MARU_${System.currentTimeMillis()}.mp4")
-    FileInputStream(file).use { input -> target.outputStream().use { input.copyTo(it) } }
-    return Uri.fromFile(target)
+    val destination = File(directory, "MARU_${System.currentTimeMillis()}.mp4")
+    FileInputStream(file).use { input -> destination.outputStream().use(input::copyTo) }
+    return Uri.fromFile(destination)
 }
