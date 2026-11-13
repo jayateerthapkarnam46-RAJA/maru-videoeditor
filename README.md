@@ -1,21 +1,23 @@
 # MARU VIDEOEDITOR
 
-Native Android video-editing MVP built with Kotlin, Jetpack Compose, and AndroidX Media3.
+A real Android video editor milestone built with Kotlin, Jetpack Compose, and AndroidX Media3.
 
-## Working features
+## What works now
 
-- Import a video using Android's system document picker (no broad media permission request).
-- Preview the clip, play/pause, seek through it, and adjust preview speed.
-- Select an in/out trim range and export the selected section as MP4.
-- Optionally remove the source video's audio during export.
-- Save the current source, trim range, mute option, and caption text locally and restore the project on the next launch (while the Android document permission remains available).
-- Add a caption overlay to the preview.
-- Android 10+ exports to `Movies/MARU VIDEOEDITOR`.
+- Import multiple videos through the document picker.
+- Build a sequence of clips in a timeline.
+- Preview the sequence in order.
+- Trim, split, reorder, and remove clips.
+- Save the current project state locally and restore it when the Android document access remains valid.
+- Export the currently selected trimmed clip as MP4 to `Movies/MARU VIDEOEDITOR` on Android 10+.
 
 ## Build and run
 
-Open in Android Studio with JDK 17, sync Gradle, and run the `app` configuration on a physical device or emulator. Export compatibility depends on device codecs and source video formats.
+1. Open this repo in Android Studio.
+2. Use JDK 17.
+3. Let Gradle sync.
+4. Run the `app` configuration on an emulator or physical device.
 
-## Not yet implemented
+## Important limitations
 
-This is not feature-parity with CapCut. The caption currently appears in the preview only and is not included in the exported file. Multiple clips, split/ripple editing, music-track mixing, filters, transitions, crop/keyframes, thumbnails, project library, background export, and configurable resolution/bitrate still need implementation. The app has not been built or tested on a device in this environment.
+This is not a full CapCut clone. It is a working multi-clip editor milestone that demonstrates real timeline operations and selected-clip export. Advanced features such as multi-track audio, visual effects, transitions, burn-in text, project library management, and full stitched-project export are still future milestones.
